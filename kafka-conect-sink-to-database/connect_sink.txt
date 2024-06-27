@@ -1,0 +1,102 @@
+1. RUN DOCKER COMPOSE
+    docker-compose up -d
+
+2. EXEC TERMIAL IN LOCAL (ksql)
+    docker exec -it ksqldb ksql http://ksqldb:8088
+    
+    2.1. CREATE TOPIC
+    CREATE STREAM TEST01 (KEY_COL VARCHAR KEY, COL1 INT, COL2 VARCHAR)
+    WITH (KAFKA_TOPIC='test01', PARTITIONS=1, VALUE_FORMAT='AVRO');
+    
+    2.2. CREATE DATA IN KAFKA_TOPIC
+    INSERT INTO TEST01 (KEY_COL, COL1, COL2) VALUES ('X',1,'FOO');
+    INSERT INTO TEST01 (KEY_COL, COL1, COL2) VALUES ('Y',2,'BAR');
+
+3. EXEC TERMIAL IN LOCAL (mysql)
+    docker exec -it mysql bash -c "mysql -u root -p$MYSQL_ROOT_PASSWORD"
+
+4. CREATE JDBC CONNECT SINK  (Done_sink.png)
+    (VÌ SỬ DỤNG DOCKER NÊN PHẢI FIX ĐỊA CHỈ IP ĐÚNG VỚI DOCKER)
+
+    4.1.insert (chèn vào nếu cùng khóa chính sẽ bị lỗi)
+
+    curl -X PUT http://localhost:8083/connectors/sink-jdbc-mysql-01/config \
+     -H "Content-Type: application/json" -d '{
+    "connector.class"                    : "io.confluent.connect.jdbc.JdbcSinkConnector",
+    "connection.url"                     : "jdbc:mysql://172.18.0.5:3306/demo",
+    "topics"                             : "test01",
+    "key.converter"                      : "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter"                    : "io.confluent.connect.avro.AvroConverter",
+    "value.converter.schema.registry.url": "http://schema-registry:8081",
+    "connection.user"                    : "root",
+    "connection.password"                : "Admin123",
+    "auto.create"                        : true,
+    "auto.evolve"                        : true,
+    "insert.mode"                        : "insert",
+    "pk.mode"                            : "record_key",
+    "pk.fields"                          : "MESSAGE_KEY"
+}'
+    4.2. upsert (tìm và cập nhật nếu cùng khóa chính sẽ tự động cập nhật)
+
+    curl -X PUT http://localhost:8083/connectors/sink-jdbc-mysql-01/config \
+     -H "Content-Type: application/json" -d '{
+    "connector.class": "io.confluent.connect.jdbc.JdbcSinkConnector",
+    "connection.url": "jdbc:mysql://mysql:3306/demo",
+    "topics": "test01",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "connection.user": "root",
+    "connection.password": "Admin123",
+    "auto.create": true,
+    "auto.evolve": true,
+    "insert.mode": "upsert",
+    "pk.mode": "record_key",
+    "pk.fields": "MESSAGE_KEY"
+}'
+
+
+    # Drop the existing connector
+    curl -X DELETE http://localhost:8083/connectors/sink-jdbc-mysql-01
+
+    # Create a new one, reading from the same topic with new config
+    # Because it's got a new name, the connector will re-read all the messages
+    # from the topic.
+    curl -X PUT http://localhost:8083/connectors/sink-jdbc-mysql-02/config \
+        -H "Content-Type: application/json" -d '{
+        "connector.class": "io.confluent.connect.jdbc.JdbcSinkConnector",
+        "connection.url": "jdbc:mysql://mysql:3306/demo",
+        "topics": "test01",
+        "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+        "connection.user": "root",
+        "connection.password": "Admin123",
+        "auto.create": true,
+        "auto.evolve": true,
+        "insert.mode": "upsert",
+        "pk.mode": "record_key",
+        "pk.fields": "MESSAGE_KEY",
+        "transforms": "dropSome,addSome",
+        "transforms.dropSome.type": "org.apache.kafka.connect.transforms.ReplaceField$Value",
+        "transforms.dropSome.blacklist": "COL2",
+        "transforms.addSome.type":"org.apache.kafka.connect.transforms.InsertField$Value",
+        "transforms.addSome.partition.field": "_partition",
+        "transforms.addSome.timestamp.field" : "RECORD_TS"
+    }'
+
+
+
+
+    XEM TRẠNG THÁI (FIX LỖI)
+    curl -X GET http://localhost:8083/connectors/sink-jdbc-mysql-01/status
+
+    Resart:
+    curl -X POST http://localhost:8083/connectors/sink-jdbc-mysql-01/restart
+
+
+    4.2. Vào cmd của ksql để kiểm tra:(NẾU NÓ WARNING THÌ FIX LẠI ĐÚNG ĐỊA CHỈ)
+        show connectors;
+
+    4.3: Ra được hình DONE_SINK.PNG và SINK_RUNNING LÀ ok
+
+5. CHECK CONNECTORS - TRUY CẬP VÀO KAFKA CONNECT XEM CÓ CONNECTOR HAY CHƯA (check_connect_mysql_kakfa.png)
+    docker exec -it kafka-connect bash
+
+    cd /usr/share/confluent-hub-components/confluentinc-kafka-connect-jdbc/
